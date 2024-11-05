@@ -1,5 +1,6 @@
 from .config import *
 import requests
+import pymysql
 
 """These are the types of import we might expect in this file
 import httplib2
