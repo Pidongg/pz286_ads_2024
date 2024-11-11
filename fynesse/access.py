@@ -2,6 +2,7 @@ from .config import *
 import requests
 import pymysql
 import csv
+import osmnx as ox
 
 """These are the types of import we might expect in this file
 import httplib2
@@ -84,3 +85,12 @@ def housing_upload_join_data(conn, year):
     cur.execute(f"LOAD DATA LOCAL INFILE '" + csv_file_path +
                 "' INTO TABLE `prices_coordinates_data` FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED by '\"' LINES STARTING BY '' TERMINATED BY '\n';")
     print('Data stored for year: ' + str(year))
+
+
+def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
+    north = center_latitude + box_size_km/(2*111)
+    south = center_latitude - box_size_km/(2*111)
+    west = center_longitude - box_size_km/(2*111)
+    east = center_longitude + box_size_km/(2*111)
+    new_pois = ox.geometries_from_bbox(north, south, east, west, tags)
+    return new_pois
