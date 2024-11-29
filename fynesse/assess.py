@@ -137,7 +137,7 @@ class AreaComparator:
         return significant_features.sort_values('abs_difference', ascending=False)
 
 
-def get_correlations_for_radius(conn, radius_km, features_dict, table_name, target_column='percentage'):
+def get_correlations_for_radius(conn, radius_km, features_dict, table_name, target_column='percentage', geometry_col='geometry'):
     """
     Get POI counts and correlations for a specific radius
 
@@ -189,7 +189,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
                     Point({row['LONG']}, {row['LAT']}),
                     {radius_deg}
                 ),
-                p.geometry_col
+                p.{geometry_col}
             )
             """
             poi_counts = pd.read_sql(query, conn)
@@ -233,7 +233,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
     return correlations, final_df
 
 
-def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], target_column='percentage'):
+def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], target_column='percentage', geometry_col='geometry'):
     """
     Find the optimal radius for feature correlations
 
@@ -252,7 +252,7 @@ def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4,
     for radius in radii:
         print(f"\nTesting radius: {radius}km")
         corr, df = get_correlations_for_radius(
-            conn, radius, features_dict, table_name, target_column)
+            conn, radius, features_dict, table_name, target_column, geometry_col)
         if corr:
             correlation_results.append(corr)
             all_dfs[radius] = df
