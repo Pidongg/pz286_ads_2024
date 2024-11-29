@@ -3,6 +3,7 @@ import requests
 import pymysql
 import csv
 import osmnx as ox
+from pyrosm import OSM
 
 """These are the types of import we might expect in this file
 import httplib2
@@ -12,6 +13,7 @@ import mongodb
 import sqlite"""
 
 # This file accesses the data
+
 
 """Place commands in this file to access the data electronically. Don't remove any missing values, or deal with outliers. Make sure you have legalities correct, both intellectual property and personal data privacy rights. Beyond the legal side also think about the ethical issues around this data. """
 
@@ -88,9 +90,61 @@ def housing_upload_join_data(conn, year):
 
 
 def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
+# TODO: fix having a fixed denominator of 111 
     north = center_latitude + box_size_km/(2*111)
     south = center_latitude - box_size_km/(2*111)
     west = center_longitude - box_size_km/(2*111)
     east = center_longitude + box_size_km/(2*111)
     new_pois = ox.geometries_from_bbox(north, south, east, west, tags)
     return new_pois
+
+class OSMDataManager:
+    def __init__(self, output_dir: str = "./"):
+        self.output_dir = output_dir
+        
+    def download_osm_data(self, region: str = "great-britain") -> str:
+        """
+        Download OpenStreetMap data for a specified region
+        """
+        url = f"https://download.geofabrik.de/europe/{region}-latest.osm.pbf"
+        output_file = os.path.join(self.output_dir, f'{region}-latest.osm.pbf')
+        
+        if os.path.exists(output_file):
+            print(f"File already exists at: {output_file}")
+            return output_file
+            
+        print(f"Downloading {region} OSM data...")
+        response = requests.get(url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(output_file, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        print("Download complete!")
+        return output_file
+
+    def get_pois(self, 
+                 pbf_file: str, 
+                 custom_filter: Dict[str, List[str]], 
+                 columns: Optional[List[str]] = None) -> gpd.GeoDataFrame:
+        """
+        Extract POIs from OSM file with custom filters
+        """
+        try:
+            osm = OSM(pbf_file)
+            pois = osm.get_pois(custom_filter=custom_filter)
+            
+            if columns and isinstance(pois, gpd.GeoDataFrame):
+                available_cols = [col for col in columns if col in pois.columns]
+                pois = pois[available_cols]
+                
+            return pois
+            
+        except Exception as e:
+            print(f"Error reading OSM data: {e}")
+            return None
+    
+    def column_filter(self, pois: gpd.GeoDataFrame, columns_to_keep: List[str]) -> gpd.GeoDataFrame:
+        return pois[columns_to_keep]
