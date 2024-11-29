@@ -131,7 +131,7 @@ class AreaComparator:
         significant_features['abs_difference'] = abs(significant_features['difference'])
         return significant_features.sort_values('abs_difference', ascending=False)
 
-def get_correlations_for_radius(conn, radius_km, features_dict, target_column='percentage'):
+def get_correlations_for_radius(conn, radius_km, features_dict, target_column='percentage', table_name):
     """
     Get POI counts and correlations for a specific radius
     
@@ -176,7 +176,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, target_column='p
             
             query = f"""
             SELECT {', '.join(case_statements)}
-            FROM osm_education_pois p
+            FROM {table_name} p
             WHERE ST_Contains(
                 ST_Buffer(
                     Point({row['LONG']}, {row['LAT']}),
@@ -222,7 +222,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, target_column='p
     
     return correlations, final_df
 
-def find_optimal_radius(conn, features_dict, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], target_column='percentage'):
+def find_optimal_radius(conn, features_dict, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], target_column='percentage',table_name):
     """
     Find the optimal radius for feature correlations
     
@@ -240,7 +240,7 @@ def find_optimal_radius(conn, features_dict, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10]
 
     for radius in radii:
         print(f"\nTesting radius: {radius}km")
-        corr, df = get_correlations_for_radius(conn, radius, features_dict, target_column)
+        corr, df = get_correlations_for_radius(conn, radius, features_dict, target_column, table_name)
         if corr:
             correlation_results.append(corr)
             all_dfs[radius] = df
