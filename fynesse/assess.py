@@ -280,10 +280,134 @@ def plot_radius_correlations(corr_df, feature_groups=None):
             plt.figure(figsize=(12, 6))
             for feature in features:
                 plt.plot(corr_df['radius_km'], corr_df[feature], 
-                        label=feature.replace('_corr', ''))
+                        label=feature.replace('_corr', ''), marker='o')
             plt.title(f'{group_name} Correlations vs. Radius')
             plt.xlabel('Radius (km)')
             plt.ylabel(f'Correlation with Student Percentage')
             plt.legend()
             plt.grid(True)
             plt.show()
+
+# unused: failed old code
+def transform_df(df):
+    for tag in new_tags['amenity']:
+        df['is_{}'.format(tag)] = df['amenity'] == tag
+    merged_df = df.groupby('OA21CD')[f'is_{new_tags["amenity"][0]}'].sum().rename(f'is_{new_tags["amenity"][0]}').to_frame()
+    print(merged_df)
+    # Merge the remaining grouped series one by one
+    for tag in new_tags['amenity'][1:]:
+        grouped_series = df.groupby('OA21CD')[f'is_{tag}'].sum().rename(f'is_{tag}')
+        merged_df = pd.merge(merged_df, grouped_series, on='OA21CD', how='inner')
+    merged_df = pd.merge(merged_df, students_df, left_on='OA21CD', right_on='geography',how='inner')
+    merged_df['poi_count'] = merged_df.filter(like='is_').sum(axis=1)
+    return merged_df
+
+def plot_correlations(df: pd.DataFrame, x_col: str, y_col: str, kind: str = 'scatter', **kwargs) -> None:
+    """
+    Plot correlations between two columns
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing the data
+        x_col (str): Column name for x-axis
+        y_col (str): Column name for y-axis
+        kind (str): Type of plot ('scatter', 'line', etc.)
+        **kwargs: Additional arguments to pass to plot function
+    """
+    try:
+        plot = df.plot(x=x_col, y=y_col, kind=kind, **kwargs)
+        plt.xlabel(x_col)
+        plt.ylabel(y_col)
+        
+        # Calculate and display correlation
+        correlation = df[x_col].corr(df[y_col])
+        plt.title(f'Correlation: {correlation:.3f}')
+        
+        return plot
+    except Exception as e:
+        print(f"Error plotting correlations: {e}")
+
+def calculate_correlations(df: pd.DataFrame, 
+                         feature_cols: List[str], 
+                         target_col: str,
+                         method: str = 'pearson') -> pd.Series:
+    """
+    Calculate correlations between multiple features and a target
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing the data
+        feature_cols (List[str]): List of feature column names
+        target_col (str): Target column name
+        method (str): Correlation method ('pearson', 'spearman', 'kendall')
+        
+    Returns:
+        pd.Series: Series containing correlations for each feature
+    """
+    try:
+        correlations = {}
+        for col in feature_cols:
+            corr = df[col].corr(df[target_col], method=method)
+            correlations[col] = corr
+            
+        return pd.Series(correlations).sort_values(ascending=False)
+    except Exception as e:
+        print(f"Error calculating correlations: {e}")
+        return pd.Series()
+
+def plot_feature_importances(correlations: pd.Series, 
+                           title: str = 'Feature Correlations',
+                           figsize: Tuple[int, int] = (10, 6)) -> None:
+    """
+    Plot feature correlations as a bar chart
+    
+    Args:
+        correlations (pd.Series): Series of correlations
+        title (str): Plot title
+        figsize (tuple): Figure size (width, height)
+    """
+    try:
+        plt.figure(figsize=figsize)
+        correlations.plot(kind='bar')
+        plt.title(title)
+        plt.xlabel('Features')
+        plt.ylabel('Correlation')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"Error plotting feature importances: {e}")
+
+def analyze_features(df: pd.DataFrame, 
+                    features_dict: Dict[str, List[str]], 
+                    target_col: str,
+                    plot: bool = True) -> Dict[str, pd.Series]:
+    """
+    Analyze multiple feature groups and their correlations with a target
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing the data
+        features_dict (dict): Dictionary mapping feature groups to column lists
+        target_col (str): Target column name
+        plot (bool): Whether to plot results
+        
+    Returns:
+        dict: Dictionary of correlation results by feature group
+    """
+    try:
+        results = {}
+        for group_name, features in features_dict.items():
+            # Calculate correlations
+            correlations = calculate_correlations(df, features, target_col)
+            results[group_name] = correlations
+            
+            if plot:
+                # Plot correlations
+                plt.figure(figsize=(10, 6))
+                plot_feature_importances(
+                    correlations,
+                    title=f'{group_name} Correlations with {target_col}'
+                )
+                
+        return results
+    except Exception as e:
+        print(f"Error analyzing features: {e}")
+        return {}

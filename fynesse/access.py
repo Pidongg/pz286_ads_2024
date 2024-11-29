@@ -4,6 +4,11 @@ import pymysql
 import csv
 import osmnx as ox
 from pyrosm import OSM
+import pandas as pd
+import os
+import csv
+from typing import List, Optional
+from IPython import get_ipython
 
 """These are the types of import we might expect in this file
 import httplib2
@@ -90,7 +95,7 @@ def housing_upload_join_data(conn, year):
 
 
 def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
-# TODO: fix having a fixed denominator of 111 
+    # TODO: fix having a fixed denominator of 111
     north = center_latitude + box_size_km/(2*111)
     south = center_latitude - box_size_km/(2*111)
     west = center_longitude - box_size_km/(2*111)
@@ -98,36 +103,37 @@ def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
     new_pois = ox.geometries_from_bbox(north, south, east, west, tags)
     return new_pois
 
+
 class OSMDataManager:
     def __init__(self, output_dir: str = "./"):
         self.output_dir = output_dir
-        
+
     def download_osm_data(self, region: str = "great-britain") -> str:
         """
         Download OpenStreetMap data for a specified region
         """
         url = f"https://download.geofabrik.de/europe/{region}-latest.osm.pbf"
         output_file = os.path.join(self.output_dir, f'{region}-latest.osm.pbf')
-        
+
         if os.path.exists(output_file):
             print(f"File already exists at: {output_file}")
             return output_file
-            
+
         print(f"Downloading {region} OSM data...")
         response = requests.get(url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
-        
+
         with open(output_file, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-        
+
         print("Download complete!")
         return output_file
 
-    def get_pois(self, 
-                 pbf_file: str, 
-                 custom_filter: Dict[str, List[str]], 
+    def get_pois(self,
+                 pbf_file: str,
+                 custom_filter: Dict[str, List[str]],
                  columns: Optional[List[str]] = None) -> gpd.GeoDataFrame:
         """
         Extract POIs from OSM file with custom filters
@@ -135,16 +141,178 @@ class OSMDataManager:
         try:
             osm = OSM(pbf_file)
             pois = osm.get_pois(custom_filter=custom_filter)
-            
+
             if columns and isinstance(pois, gpd.GeoDataFrame):
-                available_cols = [col for col in columns if col in pois.columns]
+                available_cols = [
+                    col for col in columns if col in pois.columns]
                 pois = pois[available_cols]
-                
+
             return pois
-            
+
         except Exception as e:
             print(f"Error reading OSM data: {e}")
             return None
-    
+
     def column_filter(self, pois: gpd.GeoDataFrame, columns_to_keep: List[str]) -> gpd.GeoDataFrame:
         return pois[columns_to_keep]
+
+
+def load_chunks_to_table(df: pd.DataFrame,
+                         table_name: str,
+                         columns: List[str],
+                         chunk_size: int = 1000,
+                         geometry_column: Optional[str] = 'geometry',
+                         conn=None) -> None:
+    """
+    Load dataframe into MySQL table in chunks, with special handling for geometry data
+
+    Args:
+        df (pd.DataFrame): DataFrame to load
+        table_name (str): Name of the target table
+        columns (List[str]): List of column names to load (excluding geometry)
+        chunk_size (int): Size of chunks to process
+        geometry_column (Optional[str]): Name of the geometry column, if any
+        conn: Database connection object
+    """
+    def load_chunk(chunk: pd.DataFrame, chunk_num: int) -> None:
+        csv_file = f'{table_name}_chunk_{chunk_num}.csv'
+        try:
+            if geometry_column:
+                # Handle geometry column if present
+                chunk = chunk.dropna(subset=[geometry_column])
+                chunk[geometry_column] = chunk[geometry_column].astype(
+                    str).str.replace(',', ' and')
+
+            # Save to CSV with explicit handling
+            chunk.to_csv(csv_file,
+                         index=False,
+                         na_rep='\\N',
+                         quoting=csv.QUOTE_MINIMAL
+                         )
+
+            # Build the column list for SQL
+            if geometry_column:
+                col_list = columns + [f'@{geometry_column}']
+                geometry_set = f"SET {
+                    geometry_column} = TRIM(BOTH '\"' FROM @{geometry_column})"
+            else:
+                col_list = columns
+                geometry_set = ""
+
+            # Load data with SQL
+            load_sql = f"""
+            LOAD DATA LOCAL INFILE '{csv_file}'
+            INTO TABLE {table_name}
+            FIELDS TERMINATED BY ','
+            ENCLOSED BY '"'
+            LINES TERMINATED BY '\n'
+            IGNORE 1 LINES
+            ({', '.join(col_list)})
+            {geometry_set};
+            """
+
+            if conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(load_sql)
+                conn.commit()
+            else:
+                # Fallback to IPython SQL magic if no connection provided
+                from IPython.get_ipython import get_ipython
+                ipython = get_ipython()
+                ipython.run_line_magic('sql', load_sql)
+
+        except Exception as e:
+            print(f"Error processing chunk {chunk_num}:", e)
+            if geometry_column:
+                print("\nSample of problematic data:")
+                print(chunk[geometry_column].head())
+        finally:
+            if os.path.exists(csv_file):
+                os.remove(csv_file)
+
+    # Process in chunks
+    for i in range(0, len(df), chunk_size):
+        load_chunk(df.iloc[i:i+chunk_size], i)
+
+
+def setup_spatial_columns(conn, table_name: str,
+                          text_geometry_col: str = 'geometry',
+                          spatial_geometry_col: str = 'geometry_col') -> None:
+    """
+    Set up spatial columns and indexes for a table with geometry data
+
+    Args:
+        conn: Database connection object
+        table_name (str): Name of the table to modify
+        text_geometry_col (str): Name of the column containing geometry text
+        spatial_geometry_col (str): Name of the spatial column to create
+    """
+    try:
+        with conn.cursor() as cursor:
+            # Clean up geometry text
+            cursor.execute(f"""
+                UPDATE {table_name}
+                SET {text_geometry_col} = REPLACE(
+                    TRIM(BOTH '"' FROM {text_geometry_col}),
+                    ' and ',
+                    ', '
+                );
+            """)
+
+            # Add spatial column if it doesn't exist
+            cursor.execute(f"""
+                ALTER TABLE {table_name}
+                ADD COLUMN IF NOT EXISTS {spatial_geometry_col} GEOMETRY NOT NULL;
+            """)
+
+            # Convert text to geometry
+            cursor.execute(f"""
+                UPDATE {table_name}
+                SET {spatial_geometry_col} = ST_GeomFromText({text_geometry_col})
+                WHERE {text_geometry_col} IS NOT NULL;
+            """)
+
+            # Create spatial index if it doesn't exist
+            cursor.execute(f"""
+                CREATE SPATIAL INDEX IF NOT EXISTS idx_{spatial_geometry_col}
+                ON {table_name}({spatial_geometry_col});
+            """)
+
+        conn.commit()
+        print(f"Successfully set up spatial columns for {table_name}")
+
+    except Exception as e:
+        print(f"Error setting up spatial columns: {e}")
+        conn.rollback()
+
+def setup_sql_magic(username: str, password: str, url: str, database: str = 'ads_2024') -> None:
+    """
+    Set up SQL magic configuration and connection for Jupyter notebooks
+    
+    Args:
+        username (str): Database username
+        password (str): Database password
+        url (str): Database URL
+        database (str): Database name to use (default: 'ads_2024')
+    """
+    try:
+        ipython = get_ipython()
+        
+        # Configure SQL magic
+        ipython.run_line_magic('config', "SqlMagic.style = '_DEPRECATED_DEFAULT'")
+        
+        # Set up connection string
+        connection_string = f"mariadb+pymysql://{username}:{password}@{url}?local_infile=1"
+        ipython.run_line_magic('sql', connection_string)
+        
+        # Use specified database
+        ipython.run_line_magic('sql', f'USE `{database}`')
+        
+        # Show available tables
+        result = ipython.run_line_magic('sql', 'SHOW TABLES')
+        print("\nAvailable tables:")
+        for row in result:
+            print(f"- {row[0]}")
+            
+    except Exception as e:
+        print(f"Error setting up SQL magic: {e}")
