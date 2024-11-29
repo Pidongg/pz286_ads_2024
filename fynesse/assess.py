@@ -252,7 +252,7 @@ def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4,
     for radius in radii:
         print(f"\nTesting radius: {radius}km")
         corr, df = get_correlations_for_radius(
-            conn, radius, features_dict, target_column, table_name=table_name)
+            conn, radius, features_dict, table_name, target_column)
         if corr:
             correlation_results.append(corr)
             all_dfs[radius] = df
