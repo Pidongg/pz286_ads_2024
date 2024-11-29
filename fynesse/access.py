@@ -7,8 +7,9 @@ from pyrosm import OSM
 import pandas as pd
 import os
 import csv
-from typing import List, Optional
+from typing import Dict, List, Optional
 from IPython import get_ipython
+import geopandas as gpd 
 
 """These are the types of import we might expect in this file
 import httplib2
@@ -181,7 +182,7 @@ def load_chunks_to_table(df: pd.DataFrame,
                 # Handle geometry column if present
                 chunk = chunk.dropna(subset=[geometry_column])
                 chunk[geometry_column] = chunk[geometry_column].astype(
-                    str).str.replace(',', ' and')
+                    str).str.replace(',', 'and')
 
             # Save to CSV with explicit handling
             chunk.to_csv(csv_file,
@@ -254,8 +255,8 @@ def setup_spatial_columns(conn, table_name: str,
                 UPDATE {table_name}
                 SET {text_geometry_col} = REPLACE(
                     TRIM(BOTH '"' FROM {text_geometry_col}),
-                    ' and ',
-                    ', '
+                    'and',
+                    ','
                 );
             """)
 
