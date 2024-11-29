@@ -196,9 +196,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, target_column='p
                     combined_counts.reset_index(drop=True)
                 ], axis=1)
                 results.append(combined_chunk)
-        
-        print(f"Processed chunk {i//chunk_size + 1}")
-    
+            
     if not results:
         return None
         
