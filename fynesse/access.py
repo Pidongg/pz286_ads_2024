@@ -94,6 +94,29 @@ def housing_upload_join_data(conn, year):
                 "' INTO TABLE `prices_coordinates_data` FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED by '\"' LINES STARTING BY '' TERMINATED BY '\n';")
     print('Data stored for year: ' + str(year))
 
+def _download_census_data(code, base_dir=''):
+  url = f'https://www.nomisweb.co.uk/output/census/2021/census2021-{code.lower()}.zip'
+  extract_dir = os.path.join(base_dir, os.path.splitext(os.path.basename(url))[0])
+
+  if os.path.exists(extract_dir) and os.listdir(extract_dir):
+    print(f"Files already exist at: {extract_dir}.")
+    return
+
+  os.makedirs(extract_dir, exist_ok=True)
+  response = requests.get(url)
+  response.raise_for_status()
+
+  with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+    zip_ref.extractall(extract_dir)
+
+  print(f"Files extracted to: {extract_dir}")
+
+def _load_census_data(code, level='oa'):
+  return pd.read_csv(f'census2021-{code.lower()}/census2021-{code.lower()}-{level}.csv')
+
+def retrieve_census_data(code, level='oa'):
+  _download_census_data(code)
+  return _load_census_data(code, level)
 
 def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
     # TODO: fix having a fixed denominator of 111
