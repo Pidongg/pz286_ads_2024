@@ -1,14 +1,12 @@
 from .config import *
-
-
-# assess.py
 import osmnx as ox
 import pandas as pd
 import numpy as np
 from collections import defaultdict
 from math import cos, radians
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Tuple
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class AreaComparator:
@@ -137,9 +135,10 @@ class AreaComparator:
         return significant_features.sort_values('abs_difference', ascending=False)
 
 
-def get_correlations_for_radius(conn, radius_km, features_dict, table_name, target_column='percentage', geometry_col='geometry'):
+def get_correlations_for_radius(conn, radius_km, features_dict, table_name, target_column, table_name_2, 
+                              geometry_col='geometry', include_distances=False):
     """
-    Get POI counts and correlations for a specific radius
+    Get POI counts, expected distances, and correlations for a specific radius
 
     Args:
         conn: Database connection object
@@ -150,14 +149,18 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
                 'building': ['university', 'school'],
                 'landuse': ['education']
             }
+        table_name (str): Name of the POI table
         target_column (str): Name of the target column to correlate with
+        table_name_2 (str): Name of the table containing target data
+        geometry_col (str): Name of the geometry column
+        include_distances (bool): Whether to include expected distance features
 
     Returns:
         tuple: (correlations dict, DataFrame with results)
     """
-    coords_query = """
-    SELECT n.total_residents, n.full_time_students, n.geography, c.LAT, c.LONG
-    FROM nssec_fulltime_students_data n
+    coords_query = f"""
+    SELECT n.total_residents, n.{target_column}, n.geography, c.LAT, c.LONG
+    FROM {table_name_2} n
     JOIN nssec_output_areas_coordinates c ON n.geography = c.OA21CD
     """
     base_data = pd.read_sql(coords_query, conn)
@@ -176,10 +179,24 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
             case_statements = []
             for key, values in features_dict.items():
                 for value in values:
+                    # Count-based features
                     case_statements.append(
-                        f"COUNT(CASE WHEN p.{key} = '{value}' THEN 1 END) AS {
-                            value}_{key}_count"
+                        f"COUNT(CASE WHEN p.{key} = '{value}' THEN 1 END) AS {value}_{key}_count"
                     )
+                    
+                    if include_distances:
+                        # Expected distance
+                        case_statements.append(f"""
+                            AVG(
+                                CASE 
+                                    WHEN p.{key} = '{value}' THEN 
+                                        ST_Distance_Sphere(
+                                            Point({row['LONG']}, {row['LAT']}),
+                                            ST_Centroid(p.{geometry_col})
+                                        )/1000
+                                END
+                            ) AS {value}_{key}_expected_distance
+                        """)
 
             query = f"""
             SELECT {', '.join(case_statements)}
@@ -189,7 +206,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
                     Point({row['LONG']}, {row['LAT']}),
                     {radius_deg}
                 ),
-                p.{geometry_col}
+                ST_Centroid(p.{geometry_col})
             )
             """
             poi_counts = pd.read_sql(query, conn)
@@ -208,8 +225,7 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
         return None
 
     final_df = pd.concat(results, ignore_index=True)
-    final_df[target_column] = final_df['full_time_students'] / \
-        final_df['total_residents']
+    final_df['percentage'] = final_df[target_column] / final_df['total_residents']
 
     # Calculate correlations for each feature
     correlations = {'radius_km': radius_km}
@@ -217,23 +233,38 @@ def get_correlations_for_radius(conn, radius_km, features_dict, table_name, targ
     # Individual correlations
     for key, values in features_dict.items():
         for value in values:
-            col_name = f"{value}_{key}_count"
-            corr_name = f"{value}_{key}_corr"
-            correlations[corr_name] = final_df[col_name].corr(
-                final_df[target_column])
+            # Count correlations
+            count_col = f"{value}_{key}_count"
+            count_corr = f"{value}_{key}_count_corr"
+            correlations[count_corr] = final_df[count_col].corr(final_df['percentage'])
+            
+            if include_distances:
+                # Distance correlations
+                dist_col = f"{value}_{key}_expected_distance"
+                dist_corr = f"{value}_{key}_distance_corr"
+                correlations[dist_corr] = final_df[dist_col].corr(final_df['percentage'])
 
     # Total correlation for each key type
     for key in features_dict.keys():
-        cols = [f"{value}_{key}_count" for value in features_dict[key]]
-        if cols:
-            total_col = f"total_{key}_corr"
-            correlations[total_col] = final_df[cols].sum(
-                axis=1).corr(final_df[target_column])
+        # Total counts correlation
+        count_cols = [f"{value}_{key}_count" for value in features_dict[key]]
+        if count_cols:
+            total_count_corr = f"total_{key}_count_corr"
+            correlations[total_count_corr] = final_df[count_cols].sum(
+                axis=1).corr(final_df['percentage'])
+            
+        if include_distances:
+            # Total distance correlation
+            dist_cols = [f"{value}_{key}_expected_distance" for value in features_dict[key]]
+            if dist_cols:
+                total_dist_corr = f"total_{key}_distance_corr"
+                correlations[total_dist_corr] = final_df[dist_cols].mean(
+                    axis=1).corr(final_df['percentage'])
 
     return correlations, final_df
 
 
-def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], target_column='percentage', geometry_col='geometry'):
+def find_optimal_radius(conn, features_dict, table_name, target_column, table_name_2, radii=[0.5, 1, 2, 3, 4, 5, 7.5, 10], geometry_col='geometry', include_distances=False):
     """
     Find the optimal radius for feature correlations
 
@@ -242,6 +273,7 @@ def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4,
         features_dict (dict): Dictionary of features to count
         radii (list): List of radii to test in kilometers
         target_column (str): Name of the target column to correlate with
+        table_name_2 (str): Name of the census table
 
     Returns:
         tuple: (DataFrame of results, dict of optimal radii, dict of DataFrames)
@@ -252,7 +284,7 @@ def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4,
     for radius in radii:
         print(f"\nTesting radius: {radius}km")
         corr, df = get_correlations_for_radius(
-            conn, radius, features_dict, table_name, target_column, geometry_col)
+            conn, radius, features_dict, table_name, target_column, table_name_2, geometry_col, include_distances)
         if corr:
             correlation_results.append(corr)
             all_dfs[radius] = df
@@ -274,39 +306,42 @@ def find_optimal_radius(conn, features_dict, table_name, radii=[0.5, 1, 2, 3, 4,
 
 def plot_radius_correlations(corr_df, feature_groups=None):
     """
-    Plot correlation results for different radii
+    Plot correlation results for different radii with improved visualization
 
     Args:
         corr_df (DataFrame): DataFrame containing correlation results
         feature_groups (dict, optional): Dictionary mapping feature groups to plot together
-            e.g., {'education': ['university_amenity_corr', 'college_amenity_corr']}
+            e.g., {'community': ['university_amenity', 'social_facility_amenity', 'community_centre_amenity']}
     """
-    if feature_groups is None:
-        # Plot all correlation columns
-        corr_columns = [
-            col for col in corr_df.columns if col.endswith('_corr')]
-        plt.figure(figsize=(12, 6))
-        for col in corr_columns:
-            plt.plot(corr_df['radius_km'], corr_df[col],
-                     label=col.replace('_corr', ''))
-    else:
-        # Plot feature groups separately
-        for group_name, features in feature_groups.items():
-            plt.figure(figsize=(12, 6))
-            for feature in features:
-                plt.plot(corr_df['radius_km'], corr_df[feature],
-                         label=feature.replace('_corr', ''), marker='o')
-            plt.title(f'{group_name} Correlations vs. Radius')
-            plt.xlabel('Radius (km)')
-            plt.ylabel(f'Correlation with Student Percentage')
-            plt.legend()
-            plt.grid(True)
-            plt.show()
+    plt.figure(figsize=(12, 6))
 
-# unused: failed old code
+    # Set up the plot
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xlabel('Radius (km)')
+    plt.ylabel('Correlation with Percentage')
+    plt.title('Community Features Correlations vs. Radius')
 
+    # Plot each feature with distinct markers and colors
+    markers = ['o-', 's-', '^-']  # Different markers for different features
+    for i, (feature_name, feature_cols) in enumerate(feature_groups.items()):
+        for col in feature_cols:
+            plt.plot(corr_df['radius_km'],
+                     corr_df[col],
+                     markers[i % len(markers)],
+                     label=col,
+                     linewidth=2,
+                     markersize=6)
 
-def transform_df(df):
+    # Customize the plot
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+
+    # Add horizontal line at y=0 for reference
+    plt.axhline(y=0, color='k', linestyle=':', alpha=0.3)
+
+    return plt
+
+def transform_df(df, new_tags):
     for tag in new_tags['amenity']:
         df['is_{}'.format(tag)] = df['amenity'] == tag
     merged_df = df.groupby('OA21CD')[f'is_{new_tags["amenity"][0]}'].sum().rename(
@@ -318,8 +353,6 @@ def transform_df(df):
             'OA21CD')[f'is_{tag}'].sum().rename(f'is_{tag}')
         merged_df = pd.merge(merged_df, grouped_series,
                              on='OA21CD', how='inner')
-    merged_df = pd.merge(merged_df, students_df,
-                         left_on='OA21CD', right_on='geography', how='inner')
     merged_df['poi_count'] = merged_df.filter(like='is_').sum(axis=1)
     return merged_df
 
@@ -347,6 +380,125 @@ def plot_correlations(df: pd.DataFrame, x_col: str, y_col: str, kind: str = 'sca
         return plot
     except Exception as e:
         print(f"Error plotting correlations: {e}")
+
+
+def plot_correlations_normalized(df, feature_name, target='percentage'):
+    """
+    Plot correlation between a normalized feature (per capita) and target variable.
+
+    Parameters:
+    -----------
+    df : pandas DataFrame
+        Input dataframe containing the data
+    feature_name : str
+        Name of the feature column to analyze
+    target : str
+        Name of the target column (default='percentage')
+    """
+    # Calculate normalized feature
+    normalized_values = df[feature_name] / df['total_residents']
+
+    # Create plot
+    plt.figure(figsize=(10, 6))
+
+    # Plot scatter with transparency
+    plt.scatter(normalized_values, df[target],
+                alpha=0.3, color='blue', label='Data points')
+
+    # Calculate and display correlation
+    correlation = normalized_values.corr(df[target])
+    plt.text(0.05, 0.95, f'Correlation: {correlation:.3f}',
+             transform=plt.gca().transAxes)
+
+    plt.xlabel(f'{feature_name} per capita')
+    plt.ylabel(target)
+    plt.title(f'Correlation between {feature_name} per capita and {target}')
+    plt.legend()
+
+    plt.show()
+
+
+def plot_correlation_binned(df, feature_name, target='percentage', bins=30, suffix=''):
+    """
+    Plot correlation between a feature and target, showing average target value per bin,
+    with labeled turning points.
+
+    Parameters:
+    -----------
+    df : pandas DataFrame
+        The input dataframe
+    feature_name : str
+        Name of the feature column to analyze
+    target : str
+        Name of the target column (default='percentage')
+    bins : int
+        Number of bins to use (default=30)
+    """
+    # Create bins and calculate mean target value for each bin
+    feature_name = feature_name + suffix
+    df_grouped = df.groupby(pd.qcut(df[feature_name], bins, duplicates='drop'))[
+        target].agg(['mean', 'std', 'count'])
+    df_grouped['bin_center'] = df_grouped.index.map(lambda x: x.mid)
+
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+
+    # Plot original scatter (with alpha for better visibility)
+    plt.scatter(df[feature_name], df[target], alpha=0.1,
+                color='lightgray', label='Raw data')
+
+    # Plot mean values
+    plt.scatter(df_grouped['bin_center'], df_grouped['mean'],
+                color='red', s=100, label='Bin average')
+
+    # Add error bars (±1 standard deviation)
+    plt.errorbar(df_grouped['bin_center'], df_grouped['mean'],
+                 yerr=df_grouped['std'], color='red', fmt='none', alpha=0.5)
+
+    # Connect average points with a line
+    plt.plot(df_grouped['bin_center'], df_grouped['mean'],
+             color='red', linestyle='--', alpha=0.5)
+
+    # Find and label turning points
+    means = df_grouped['mean'].values
+    centers = df_grouped['bin_center'].values
+
+    # Calculate differences between consecutive points
+    diffs = np.diff(means)
+
+    # Find where the slope changes significantly (turning points)
+    threshold = np.std(diffs) * 1.5  # Adjust threshold as needed
+    turning_points = []
+
+    for i in range(1, len(diffs)-1):
+        if (abs(diffs[i] - diffs[i-1]) > threshold):
+            turning_points.append(i)
+
+    # Label turning points
+    for tp in turning_points:
+        plt.annotate(f'({centers[tp]:.1f}, {means[tp]:.3f})',
+                     xy=(centers[tp], means[tp]),
+                     xytext=(10, 10),
+                     textcoords='offset points',
+                     ha='left',
+                     va='bottom',
+                     bbox=dict(boxstyle='round,pad=0.5',
+                               fc='yellow', alpha=0.5),
+                     arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+
+    plt.xlabel(feature_name)
+    plt.ylabel(f'Average {target}')
+    plt.title(f'Binned correlation between {feature_name} and {target}')
+    plt.legend()
+
+    # Print correlation coefficient
+    correlation = df[feature_name].corr(df[target])
+    plt.text(0.05, 0.95, f'Correlation: {correlation:.3f}',
+             transform=plt.gca().transAxes)
+
+    plt.show()
+
+    return df_grouped
 
 
 def calculate_correlations(df: pd.DataFrame,
@@ -436,3 +588,108 @@ def analyze_features(df: pd.DataFrame,
     except Exception as e:
         print(f"Error analyzing features: {e}")
         return {}
+
+
+def compare_prices_multi(df, column_name):
+    """
+    Calculate and visualize average prices for multiple categories
+    """
+    # Calculate averages for each unique value
+    for val in df[column_name].unique():
+        df[f'{val}_avg_price'] = df[df[column_name] == val].groupby(
+            'date_of_transfer')['price'].transform('mean')
+
+    # Calculate overall statistics for each category
+    stats = {}
+    for val in df[column_name].unique():
+        stats[val] = df[f'{val}_avg_price'].mean()
+
+    # Create box plot
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=df, x=column_name, y='price')
+    plt.title(f'Price Distribution by {column_name}')
+    plt.ylabel('Price (£)')
+
+    # Print summary statistics
+    print(f"\nAverage prices by {column_name}:")
+    for val, avg in stats.items():
+        print(f"{val}: £{avg:,.2f}")
+
+
+def remove_outliers(df, columns, threshold=2):
+    """
+    Remove outliers from a DataFrame based on specified columns.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        The input DataFrame.
+    columns : list
+        List of column names to check for outliers.
+    threshold : float, optional
+        Number of standard deviations to use as the cutoff for outliers (default is 2).
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with outliers removed.
+    """
+    # Calculate mean and standard deviation for each column
+    means = df[columns].mean()
+    stds = df[columns].std()
+
+    # Filter out rows where any column value is more than `threshold` standard deviations from the mean
+    mask = (df[columns] - means).abs() <= threshold * stds
+    filtered_df = df[mask.all(axis=1)]
+
+    return filtered_df
+
+
+def plot_nth_prices(df, n=100, property_type=None, order='highest'):
+    """
+    Plot the nth highest or lowest prices from the dataset as a line graph
+
+    Parameters:
+    df: DataFrame containing price data
+    n: Number of prices to show (default 100)
+    property_type: Optional filter for specific property type
+    order: 'highest' or 'lowest' to determine which end of the price range to plot
+    """
+    # Input validation
+    if order not in ['highest', 'lowest']:
+        raise ValueError("order must be either 'highest' or 'lowest'")
+
+    # Filter by property type if specified
+    if property_type:
+        df = df[df['property_type'] == property_type]
+
+    # Sort prices and get top/bottom n
+    if order == 'highest':
+        selected_prices = df.nlargest(n, 'price')
+        title_prefix = 'Highest'
+    else:
+        selected_prices = df.nsmallest(n, 'price')
+        title_prefix = 'Lowest'
+
+    # Create the plot
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(n), selected_prices['price'], marker='o')
+
+    # Customize the plot
+    plt.title(f'{title_prefix} {n} Prices' +
+              (f' for Property Type {property_type}' if property_type else ''))
+    plt.xlabel('Rank')
+    plt.ylabel('Price (£)')
+
+    # Format y-axis with comma separator for thousands
+    plt.gca().yaxis.set_major_formatter(
+        plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+    # Add grid for better readability
+    plt.grid(True, linestyle='--', alpha=0.7)
+
+    # Show fewer x-axis labels (only show every 10th rank)
+    step = max(n // 10, 1)  # Show ~10 labels, but at least 1 step
+    plt.xticks(range(0, n, step), range(1, n+1, step))
+
+    plt.show()

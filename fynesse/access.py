@@ -9,24 +9,11 @@ import os
 import csv
 from typing import Dict, List, Optional
 from IPython import get_ipython
-import geopandas as gpd 
-
-"""These are the types of import we might expect in this file
-import httplib2
-import oauth2
-import tables
-import mongodb
-import sqlite"""
-
-# This file accesses the data
-
+import geopandas as gpd
+import zipfile
+import io
 
 """Place commands in this file to access the data electronically. Don't remove any missing values, or deal with outliers. Make sure you have legalities correct, both intellectual property and personal data privacy rights. Beyond the legal side also think about the ethical issues around this data. """
-
-
-def data():
-    """Read the data from the web or local file, returning structured format such as a data frame"""
-    raise NotImplementedError
 
 
 def download_price_paid_data(year_from, year_to):
@@ -92,31 +79,44 @@ def housing_upload_join_data(conn, year):
     print('Storing data for year: ' + str(year))
     cur.execute(f"LOAD DATA LOCAL INFILE '" + csv_file_path +
                 "' INTO TABLE `prices_coordinates_data` FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED by '\"' LINES STARTING BY '' TERMINATED BY '\n';")
+    conn.commit()
     print('Data stored for year: ' + str(year))
 
-def _download_census_data(code, base_dir=''):
-  url = f'https://www.nomisweb.co.uk/output/census/2021/census2021-{code.lower()}.zip'
-  extract_dir = os.path.join(base_dir, os.path.splitext(os.path.basename(url))[0])
 
-  if os.path.exists(extract_dir) and os.listdir(extract_dir):
-    print(f"Files already exist at: {extract_dir}.")
-    return
+def _download_census_data(code, year='2021', base_dir='', level='oa'):
+    url = f'https://www.nomisweb.co.uk/output/census/{year}/census{year}-{code.lower()}.zip'
+    if year == '2011':
+        url = f'https://www.nomisweb.co.uk/output/census/{
+            year}/{code.lower()}_2011_{level}.zip'
+    extract_dir = os.path.join(
+        base_dir, os.path.splitext(os.path.basename(url))[0])
 
-  os.makedirs(extract_dir, exist_ok=True)
-  response = requests.get(url)
-  response.raise_for_status()
+    if os.path.exists(extract_dir) and os.listdir(extract_dir):
+        print(f"Files already exist at: {extract_dir}.")
+        return
 
-  with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
-    zip_ref.extractall(extract_dir)
+    os.makedirs(extract_dir, exist_ok=True)
+    response = requests.get(url)
+    response.raise_for_status()
 
-  print(f"Files extracted to: {extract_dir}")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+        zip_ref.extractall(extract_dir)
 
-def _load_census_data(code, level='oa'):
-  return pd.read_csv(f'census2021-{code.lower()}/census2021-{code.lower()}-{level}.csv')
+    print(f"Files extracted to: {extract_dir}")
 
-def retrieve_census_data(code, level='oa'):
-  _download_census_data(code)
-  return _load_census_data(code, level)
+
+def _load_census_data(code, year='2021', level='oa'):
+    if year == '2011':
+        if code[0] == 'K':
+            return pd.read_csv(f'{code.lower()}_{year}_{level}/{code.upper()}DATA.csv')
+        return pd.read_csv(f'{code.lower()}_{year}_{level}/{code.lower()}_{year}_{level}/{code.upper()}DATA.csv')
+    return pd.read_csv(f'census{year}-{code.lower()}/census{year}-{code.lower()}-{level}.csv')
+
+
+def retrieve_census_data(code, year='2021', level='oa'):
+    _download_census_data(code, year)
+    return _load_census_data(code, year, level)
+
 
 def get_osm_data(center_latitude, center_longitude, box_size_km, tags):
     # TODO: fix having a fixed denominator of 111
@@ -185,7 +185,7 @@ def load_chunks_to_table(df: pd.DataFrame,
                          table_name: str,
                          columns: List[str],
                          chunk_size: int = 1000,
-                         geometry_column: Optional[str] = 'geometry',
+                         geometry_column: Optional[str] = None,
                          conn=None) -> None:
     """
     Load dataframe into MySQL table in chunks, with special handling for geometry data
@@ -198,6 +198,7 @@ def load_chunks_to_table(df: pd.DataFrame,
         geometry_column (Optional[str]): Name of the geometry column, if any
         conn: Database connection object
     """
+    df = df.reset_index(drop=True)
     def load_chunk(chunk: pd.DataFrame, chunk_num: int) -> None:
         csv_file = f'{table_name}_chunk_{chunk_num}.csv'
         try:
@@ -240,8 +241,6 @@ def load_chunks_to_table(df: pd.DataFrame,
                     cursor.execute(load_sql)
                 conn.commit()
             else:
-                # Fallback to IPython SQL magic if no connection provided
-                from IPython.get_ipython import get_ipython
                 ipython = get_ipython()
                 ipython.run_line_magic('sql', load_sql)
 
@@ -309,10 +308,11 @@ def setup_spatial_columns(conn, table_name: str,
         print(f"Error setting up spatial columns: {e}")
         conn.rollback()
 
+
 def setup_sql_magic(username: str, password: str, url: str, database: str = 'ads_2024') -> None:
     """
     Set up SQL magic configuration and connection for Jupyter notebooks
-    
+
     Args:
         username (str): Database username
         password (str): Database password
@@ -321,22 +321,42 @@ def setup_sql_magic(username: str, password: str, url: str, database: str = 'ads
     """
     try:
         ipython = get_ipython()
-        
+
         # Configure SQL magic
-        ipython.run_line_magic('config', "SqlMagic.style = '_DEPRECATED_DEFAULT'")
-        
+        ipython.run_line_magic(
+            'config', "SqlMagic.style = '_DEPRECATED_DEFAULT'")
+
         # Set up connection string
-        connection_string = f"mariadb+pymysql://{username}:{password}@{url}?local_infile=1"
+        connection_string = f"mariadb+pymysql://{
+            username}:{password}@{url}?local_infile=1"
         ipython.run_line_magic('sql', connection_string)
-        
+
         # Use specified database
         ipython.run_line_magic('sql', f'USE `{database}`')
-        
+
+        # Set SQL mode and timezone
+        ipython.run_line_magic('sql', 'SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO"')
+        ipython.run_line_magic('sql', 'SET time_zone = "+00:00"')
+
         # Show available tables
         result = ipython.run_line_magic('sql', 'SHOW TABLES')
         print("\nAvailable tables:")
         for row in result:
             print(f"- {row[0]}")
-            
+
     except Exception as e:
         print(f"Error setting up SQL magic: {e}")
+
+
+def load_table(table_name: str, conn):
+    """
+    Load and join all necessary data tables to associate houses with OAs and census data
+    """
+    final_query = f"""
+        SELECT * from {table_name}
+    """
+
+    # Execute query
+    df = pd.read_sql(final_query, conn)
+
+    return df
