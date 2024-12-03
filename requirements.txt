@@ -1,0 +1,14 @@
+pandas
+numpy
+osmnx
+pyyaml
+ipywidgets
+pymysql
+sqlalchemy
+pyrosm
+wget
+geopandas
+scikit-learn
+statsmodels
+seaborn
+matplotlib
