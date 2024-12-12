@@ -144,32 +144,11 @@ def create_per_capita_features(df, features, population_col='total_residents'):
 def plot_gaussian_model_results(X, y, feature_names=None, feature_index=0, title=None, alpha=0.05,
                                 link_function='log', create_plot=True):
     """
-    Fit and optionally plot Gaussian GLM results with specified link function.
-
-    Parameters:
-    -----------
-    X : numpy.ndarray
-        Feature matrix (including constant term if needed)
-    y : numpy.ndarray
-        Target variable
-    feature_names : list, optional
-        List of feature names
-    feature_index : int, optional
-        Index of the feature to plot (default=0)
-    title : str, optional
-        Plot title
-    alpha : float, optional
-        Significance level for confidence intervals (default=0.05)
-    link_function : str, optional
-        Link function to use ('log', 'identity', 'inverse', 'sqrt')
-    create_plot : bool, optional
-        Whether to create and return the plot (default=True)
-
-    Returns:
-    --------
-    tuple : (model_results, figure) if create_plot=True
-            (model_results, None) if create_plot=False
+    Fit and plot Gaussian GLM results with specified link function.
     """
+    X = np.array(X)  # Features matrix
+    y = np.array(y)  # Target variable
+
     # Define link function
     if link_function == 'log':
         family = sm.families.Gaussian(link=sm.families.links.Log())
@@ -197,16 +176,23 @@ def plot_gaussian_model_results(X, y, feature_names=None, feature_index=0, title
         feature_names = [f'Feature_{i}' for i in range(X.shape[1])]
     feature_name = feature_names[feature_index]
 
-    # Select feature for plotting
+    # Select feature for plotting and sort data
     x_feature = X[:, feature_index]
+    sort_idx = np.argsort(x_feature)
+    x_feature_sorted = x_feature[sort_idx]
+    y_sorted = y[sort_idx]
+    X_sorted = X[sort_idx]
 
-    # Get predictions and confidence intervals
-    predictions = glm_results.get_prediction(X).summary_frame(alpha=alpha)
+    # Get predictions and confidence intervals using sorted data
+    predictions = glm_results.get_prediction(
+        X_sorted).summary_frame(alpha=alpha)
 
     # Create plot
     fig = plt.figure(figsize=(12, 6))
 
-    plt.scatter(x_feature, y,
+    # Plot actual data points
+    plt.scatter(x_feature,  # Original unsorted x for scatter plot
+                y,          # Original unsorted y for scatter plot
                 marker='X',
                 color='blue',
                 edgecolor='black',
@@ -215,7 +201,8 @@ def plot_gaussian_model_results(X, y, feature_names=None, feature_index=0, title
                 zorder=1,
                 label='Actual')
 
-    plt.plot(x_feature,
+    # Plot predicted line and CI with sorted data
+    plt.plot(x_feature_sorted,
              predictions['mean'],
              color='red',
              linewidth=3.0,
@@ -223,7 +210,7 @@ def plot_gaussian_model_results(X, y, feature_names=None, feature_index=0, title
              label=f'Predicted ({link_function} link)')
 
     plt.fill_between(
-        x_feature,
+        x_feature_sorted,
         predictions['mean_ci_lower'],
         predictions['mean_ci_upper'],
         color='red',
@@ -242,61 +229,44 @@ def plot_gaussian_model_results(X, y, feature_names=None, feature_index=0, title
     return glm_results, fig
 
 
-def fit_linear_model_with_constant(df, target_col, feature_cols=None, alpha=0.05):
+def fit_linear_model(feature_list, y, alpha=0.05, silent=False):
     """
     Fit a linear model with per-capita features and visualize results.
-
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Input dataframe containing all features and target
-    target_col : str
-        Name of the target column
-    feature_cols : list of str, optional
-        List of feature column names. If None, uses all columns ending with '_per_capita'
-    additional_features : list of str, optional
-        Additional feature columns to include (e.g., ['total_residents', 'latitude', 'longitude'])
-    alpha : float, optional
-        Significance level for confidence intervals (default=0.05)
-
-    Returns:
-    --------
-    tuple
-        (model_results, figure) - The fitted model results and matplotlib figure
     """
-    # Prepare feature matrix
-    feature_list = [df[feature] for feature in feature_cols]
-
-    # Add constant term
-    feature_list.append(np.ones(len(df)))
-
-    # Create feature matrix and target vector
-    X = np.column_stack(feature_list)
-    y = df[target_col]
+    X = np.array(feature_list)  # Features matrix
+    y = np.array(y)  # Target variable
 
     # Fit model
     model = sm.OLS(y, X)
     results = model.fit()
+    if silent:
+        return results, None
 
-    # Get predictions
-    predictions = results.get_prediction(X).summary_frame(alpha=alpha)
+    # Sort data by first feature for plotting
+    sort_idx = np.argsort(X[:, 0])
+    X_sorted = X[sort_idx]
+    feature_sorted = X[:, 0][sort_idx]
+
+    # Get predictions using sorted data
+    predictions = results.get_prediction(X_sorted).summary_frame(alpha=alpha)
 
     # Create visualization
     fig = plt.figure(figsize=(12, 6))
 
-    # Plot first feature vs target
-    plt.scatter(df[feature_cols[0]], y,
+    # Plot original data points
+    plt.scatter(X[:, 0], y,
                 alpha=0.5,
                 label='Actual',
                 color='blue')
 
-    plt.plot(df[feature_cols[0]],
+    # Plot predicted line and CI with sorted data
+    plt.plot(feature_sorted,
              predictions['mean'],
              color='red',
              label='Predicted')
 
     plt.fill_between(
-        df[feature_cols[0]],
+        feature_sorted,
         predictions['mean_ci_lower'],
         predictions['mean_ci_upper'],
         alpha=0.2,
@@ -304,9 +274,9 @@ def fit_linear_model_with_constant(df, target_col, feature_cols=None, alpha=0.05
         label=f'{int((1-alpha)*100)}% CI'
     )
 
-    plt.xlabel(feature_cols[0])
-    plt.ylabel(target_col)
-    plt.title(f'Linear Model: {target_col} vs {feature_cols[0]}')
+    plt.xlabel('Features')
+    plt.ylabel('Price')
+    plt.title(f'Linear Model: Price vs features')
     plt.legend()
 
     # Print model summary and coefficients
@@ -314,63 +284,50 @@ def fit_linear_model_with_constant(df, target_col, feature_cols=None, alpha=0.05
     print("=" * 50)
     print(results.summary())
 
-    print("\nFeature Coefficients:")
-    print("-" * 50)
-    for feature, coef in zip(feature_cols, results.params):
-        print(f"{feature}: {coef:.4f}")
+    print(results.params)
 
     return results, fig
 
 
-def compare_with_baseline(merged_df, property_type='F', link_function='log', create_plot=True):
+def compare_with_baseline(X_full, X_baseline, y, property_type='F', link_function='log', create_plot=True):
     """
-    Compare full model (all demographic features) with baseline model (total residents only)
-    for predicting house prices.
+    Compare full model with baseline model for predicting house prices.
 
     Parameters:
     -----------
-    merged_df : pandas.DataFrame
-        DataFrame containing house prices and demographic features
+    X_full : numpy.ndarray
+        Feature matrix including all features
+    X_baseline : numpy.ndarray
+        Feature matrix for baseline model
+    y : numpy.ndarray or pandas.Series
+        Target variable (prices)
     property_type : str, optional
-        Property type to analyze ('F', 'T', 'D', or 'S')
+        Property type label for display purposes
     link_function : str, optional
         Link function to use ('log', 'identity')
     create_plot : bool, optional
         Whether to create comparison plots
+
+    Returns:
+    --------
+    baseline_results : GLMResults
+        Results from baseline model
+    full_results : GLMResults
+        Results from full model
+    fig : matplotlib.figure.Figure or None
+        Comparison plot if create_plot=True, else None
     """
-    # Filter for property type
-    df = merged_df[merged_df['property_type'] == property_type].copy()
-
-    # Prepare features
-    demographic_features = ['uk_passports_per_capita', 'born_in_uk_per_capita',
-                            'ten_years_or_more_per_capita', 'uk_migrant_per_capita',
-                            'international_migrant_per_capita', 'student_address_per_capita']
-
-    # Prepare X and y
-    X_full = np.column_stack([
-        df[demographic_features],
-        np.ones(len(df)),  # constant
-        df['total_residents']
-    ])
-
-    X_baseline = np.column_stack([
-        np.ones(len(df)),  # constant
-        df['total_residents']
-    ])
-
-    y = df['price']
-
     # Get model results
     baseline_results, _ = plot_gaussian_model_results(
         X_baseline, y,
-        feature_names=['constant', 'total_residents'],
+        feature_names=[f'baseline_{i+1}' for i in range(X_baseline.shape[1])],
         link_function=link_function,
         create_plot=False
     )
 
     full_results, _ = plot_gaussian_model_results(
         X_full, y,
-        feature_names=demographic_features + ['constant', 'total_residents'],
+        feature_names=[f'feature_{i+1}' for i in range(X_full.shape[1])],
         link_function=link_function,
         create_plot=False
     )
@@ -382,7 +339,9 @@ def compare_with_baseline(merged_df, property_type='F', link_function='log', cre
     # Print comparison
     print(f"\nModel Comparison for Property Type {property_type}:")
     print("=" * 50)
-    print(f"Number of properties: {len(df)}")
+    print(f"Number of observations: {len(y)}")
+    print(f"Baseline features: {X_baseline.shape[1]}")
+    print(f"Full model features: {X_full.shape[1]}")
     print(f"\nBaseline Model Pseudo R-squared: {pseudo_r2_baseline:.4f}")
     print(f"Full Model Pseudo R-squared: {pseudo_r2_full:.4f}")
     print(
@@ -401,14 +360,16 @@ def compare_with_baseline(merged_df, property_type='F', link_function='log', cre
         ax2.set_xlabel('Predicted Price')
         ax2.set_ylabel('Actual Price')
 
-        ax1.set_title(f'Baseline Model\nPseudo R² = {pseudo_r2_baseline:.4f}')
-        ax2.set_title(f'Full Model\nPseudo R² = {pseudo_r2_full:.4f}')
+        ax1.set_title(f'Property Type {property_type}\nBaseline Model\nPseudo R² = {
+                      pseudo_r2_baseline:.4f}')
+        ax2.set_title(f'Property Type {property_type}\nFull Model\nPseudo R² = {
+                      pseudo_r2_full:.4f}')
 
         # Add perfect prediction line
-        min_val = min(y.min(), baseline_results.fittedvalues.min(),
-                      full_results.fittedvalues.min())
-        max_val = max(y.max(), baseline_results.fittedvalues.max(),
-                      full_results.fittedvalues.max())
+        min_val = min(min(y), min(baseline_results.fittedvalues),
+                      min(full_results.fittedvalues))
+        max_val = max(max(y), max(baseline_results.fittedvalues),
+                      max(full_results.fittedvalues))
         ax1.plot([min_val, max_val], [min_val, max_val],
                  'r--', label='Perfect Prediction')
         ax2.plot([min_val, max_val], [min_val, max_val],
@@ -423,76 +384,10 @@ def compare_with_baseline(merged_df, property_type='F', link_function='log', cre
     return baseline_results, full_results, None
 
 
-def create_property_type_models(merged_df, features_dict, link_functions=['identity', 'log']):
-    """
-    Create separate Gaussian GLMs for each property type with different link functions
-    and compare with baseline models
-    """
-    # Get all features
-    all_features = [feature for feature_list in features_dict.values()
-                    for feature in feature_list]
-
-    # Create per capita features
-    create_per_capita_features(merged_df, all_features)
-    per_capita_features = [f"{feature}_per_capita" for feature in all_features]
-
-    # Dictionary to store results
-    property_models = {}
-
-    # Create model for each property type
-    for prop_type in merged_df['property_type'].unique():
-        property_models[prop_type] = {}
-
-        # Filter data for this property type
-        type_data = merged_df[merged_df['property_type'] == prop_type].copy()
-
-        # Prepare X and y
-        X = np.column_stack((
-            [type_data[feature] for feature in per_capita_features] +
-            [np.ones(len(type_data)), type_data['total_residents']]
-        ))
-        y = type_data['price']
-
-        print(f"\nProperty Type: {prop_type}")
-        print("=" * 50)
-
-        # Try different link functions and compare with baseline
-        for link in link_functions:
-            print(f"\nTrying {link} link function:")
-            print("-" * 30)
-
-            try:
-                baseline_results, full_results, fig = compare_with_baseline(
-                    X=X,
-                    y=y,
-                    feature_names=per_capita_features +
-                    ['constant', 'total_residents'],
-                    link_function=link,
-                    create_plot=False
-                )
-
-                if fig is not None:
-                    plt.show()
-
-                # Store results
-                property_models[prop_type][link] = {
-                    'baseline_results': baseline_results,
-                    'full_results': full_results,
-                    'data': type_data,
-                    'features': per_capita_features + ['constant', 'total_residents']
-                }
-
-            except Exception as e:
-                print(f"Error with {link} link for {prop_type}: {e}")
-                continue
-
-    return property_models
-
-
 def compare_models_kfold(models_dict, X, y, k=5):
     """
     Compare different models using k-fold cross validation.
-    
+
     Args:
     models_dict (dict): Dictionary of model names and their model classes (not fitted models)
     X (np.array): Feature matrix
@@ -501,7 +396,7 @@ def compare_models_kfold(models_dict, X, y, k=5):
     """
     # Initialize KFold
     kf = KFold(n_splits=k, shuffle=True, random_state=42)
-    
+
     # Dictionary to store results
     results = {
         'model': [],
@@ -511,29 +406,29 @@ def compare_models_kfold(models_dict, X, y, k=5):
         'mae': [],
         'r2': []
     }
-    
+
     # For each model
     for model_name, model_class in models_dict.items():
         # For each fold
         for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
             X_train, X_test = X[train_idx], X[test_idx]
             y_train, y_test = y[train_idx], y[test_idx]
-            
+
             # Create and fit model
             if isinstance(model_class, type(sm.GLM)):
                 model = model_class(y_train, X_train)
             else:
                 model = model_class(y_train, X_train)
-            
+
             fitted_model = model.fit()
             y_pred = fitted_model.predict(X_test)
-            
+
             # Calculate metrics
             mse = mean_squared_error(y_test, y_pred)
             rmse = np.sqrt(mse)
             mae = mean_absolute_error(y_test, y_pred)
             r2 = r2_score(y_test, y_pred)
-            
+
             # Store results
             results['model'].append(model_name)
             results['fold'].append(fold)
@@ -541,10 +436,10 @@ def compare_models_kfold(models_dict, X, y, k=5):
             results['rmse'].append(rmse)
             results['mae'].append(mae)
             results['r2'].append(r2)
-    
+
     # Convert to DataFrame
     results_df = pd.DataFrame(results)
-    
+
     # Calculate average metrics for each model
     summary = results_df.groupby('model').agg({
         'mse': ['mean', 'std'],
@@ -552,17 +447,17 @@ def compare_models_kfold(models_dict, X, y, k=5):
         'mae': ['mean', 'std'],
         'r2': ['mean', 'std']
     }).round(4)
-    
+
     # Plot results
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     metrics = ['mse', 'rmse', 'mae', 'r2']
-    
+
     for i, metric in enumerate(metrics):
-        ax = axes[i//2, i%2]
+        ax = axes[i//2, i % 2]
         sns.boxplot(data=results_df, x='model', y=metric, ax=ax)
         ax.set_title(f'{metric.upper()} by Model')
         ax.tick_params(axis='x', rotation=45)
-    
+
     plt.tight_layout()
-    
+
     return summary, results_df
